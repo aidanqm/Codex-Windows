@@ -281,8 +281,12 @@ function Normalize-PathString([string]$Path) {
   $p = $p -replace "/", "\"
   try {
     $full = [System.IO.Path]::GetFullPath($p)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    if ($root -and ($full.Length -le $root.Length)) { return $root }
     return $full.TrimEnd("\")
   } catch {
+    if ($p -match "^[a-zA-Z]:\\$") { return $p }
+    if ($p -match "^\\\\[^\\]+\\[^\\]+\\$") { return $p }
     return $p.TrimEnd("\")
   }
 }
