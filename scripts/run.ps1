@@ -36,9 +36,43 @@ function Read-DotEnv([string]$Path) {
     if ($k.Length -gt 0 -and $k[0] -eq [char]0xFEFF) { $k = $k.TrimStart([char]0xFEFF) }
     $v = $t.Substring($idx + 1)
     if (-not $k) { continue }
-    $map[$k] = (Parse-DotEnvValue $v)
+    $parsed = (Parse-DotEnvValue $v)
+    if ($null -eq $parsed) { continue }
+    if (($parsed -is [string]) -and ($parsed.Trim().Length -eq 0)) { continue }
+    $map[$k] = $parsed
   }
   return $map
+}
+
+function Ensure-DotEnvTemplate([string]$Path) {
+  if (-not $Path) { return }
+  $dir = Split-Path $Path -Parent
+  if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+
+  $enc = [System.Text.UTF8Encoding]::new($false)
+  if (-not (Test-Path $Path)) {
+    $content = @(
+      "# Codex Windows local config"
+      "# Set CODEX_HOME to your Codex profile directory (leave empty to use default)."
+      "CODEX_HOME="
+      ""
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($Path, $content, $enc)
+    return
+  }
+
+  try {
+    $text = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+  } catch {
+    return
+  }
+  if ($null -eq $text) { $text = "" }
+  if ($text -match "(?m)^\\s*CODEX_HOME\\s*=") { return }
+
+  if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $text += "`n" }
+  if ($text.Length -gt 0 -and -not $text.EndsWith("`n`n")) { $text += "`n" }
+  $text += "CODEX_HOME=`n"
+  [System.IO.File]::WriteAllText($Path, $text, $enc)
 }
 
 function Set-DotEnvVar([string]$Path, [string]$Key, [string]$Value) {
@@ -270,6 +304,7 @@ function Ensure-GitOnPath() {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $dotEnvPath = Join-Path $repoRoot ".env"
+Ensure-DotEnvTemplate $dotEnvPath
 $dotEnv = Read-DotEnv $dotEnvPath
 
 $dotEnvCodexHome = if ($dotEnv.ContainsKey("CODEX_HOME")) { $dotEnv["CODEX_HOME"] } else { $null }
