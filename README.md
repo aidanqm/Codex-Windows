@@ -7,7 +7,7 @@ This repository provides a **Windows-only runner** that extracts the macOS Codex
 - Node.js
 - 7-Zip (`7z` in PATH)
 - If 7-Zip is not installed, the runner will try `winget` or download a portable copy
-- Codex CLI installed (`npm i -g @openai/codex`)
+- Codex CLI installed (`pnpm add -g @openai/codex`)
 
 ## Quick Start
 1. Place your DMG in the repo root (default name `Codex.dmg`).
