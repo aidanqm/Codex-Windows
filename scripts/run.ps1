@@ -79,13 +79,19 @@ function Resolve-CodexCliPath([string]$Explicit) {
   } catch {}
 
   try {
-    $npmCmd = Resolve-CommandPath @("npm.cmd", "npm")
-    $npmRoot = if ($npmCmd) { (& $npmCmd root -g 2>$null).Trim() } else { $null }
-    if ($npmRoot) {
+    $pnpmCmd = Resolve-CommandPath @("pnpm.cmd", "pnpm")
+    $corepackCmd = Resolve-CommandPath @("corepack.cmd", "corepack")
+    $pnpmRoot = $null
+    if ($pnpmCmd) {
+      $pnpmRoot = (& $pnpmCmd root -g 2>$null).Trim()
+    } elseif ($corepackCmd) {
+      $pnpmRoot = (& $corepackCmd pnpm root -g 2>$null).Trim()
+    }
+    if ($pnpmRoot) {
       $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
-      $candidates += (Join-Path $npmRoot "@openai\codex\vendor\$arch\codex\codex.exe")
-      $candidates += (Join-Path $npmRoot "@openai\codex\vendor\x86_64-pc-windows-msvc\codex\codex.exe")
-      $candidates += (Join-Path $npmRoot "@openai\codex\vendor\aarch64-pc-windows-msvc\codex\codex.exe")
+      $candidates += (Join-Path $pnpmRoot "@openai\codex\vendor\$arch\codex\codex.exe")
+      $candidates += (Join-Path $pnpmRoot "@openai\codex\vendor\x86_64-pc-windows-msvc\codex\codex.exe")
+      $candidates += (Join-Path $pnpmRoot "@openai\codex\vendor\aarch64-pc-windows-msvc\codex\codex.exe")
     }
   } catch {}
 
@@ -143,9 +149,17 @@ function Ensure-GitOnPath() {
 }
 
 Ensure-Command node
-$script:NpmCmd = Resolve-CommandPath @("npm.cmd", "npm")
-if (-not $script:NpmCmd) { throw "npm not found." }
-$script:NpxCmd = Resolve-CommandPath @("npx.cmd", "npx")
+$script:PnpmCmd = Resolve-CommandPath @("pnpm.cmd", "pnpm")
+$script:CorepackCmd = Resolve-CommandPath @("corepack.cmd", "corepack")
+if (-not $script:PnpmCmd -and -not $script:CorepackCmd) { throw "pnpm not found." }
+
+function Invoke-Pnpm([string[]]$CommandArgs) {
+  if ($script:PnpmCmd) {
+    & $script:PnpmCmd @CommandArgs
+    return
+  }
+  & $script:CorepackCmd pnpm @CommandArgs
+}
 
 foreach ($k in @("npm_config_runtime","npm_config_target","npm_config_disturl","npm_config_arch","npm_config_build_from_source")) {
   if (Test-Path "Env:$k") { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
@@ -210,19 +224,8 @@ if (-not $Reuse) {
   New-Item -ItemType Directory -Force -Path $appDir | Out-Null
   $asar = Join-Path $electronDir "Codex Installer\Codex.app\Contents\Resources\app.asar"
   if (-not (Test-Path $asar)) { throw "app.asar not found." }
-  $extracted = $false
-  if ($script:NpxCmd) {
-    & $script:NpxCmd --yes @electron/asar extract $asar $appDir
-    if ($LASTEXITCODE -eq 0) {
-      $extracted = $true
-    } else {
-      Write-Host "npx extract failed; falling back to npm exec." -ForegroundColor Yellow
-    }
-  }
-  if (-not $extracted) {
-    & $script:NpmCmd exec --yes --package=@electron/asar -- asar extract $asar $appDir
-    if ($LASTEXITCODE -ne 0) { throw "app.asar extraction failed." }
-  }
+  Invoke-Pnpm @("dlx", "@electron/asar", "extract", $asar, $appDir)
+  if ($LASTEXITCODE -ne 0) { throw "app.asar extraction failed." }
 
   Write-Header "Syncing app.asar.unpacked"
   $unpacked = Join-Path $electronDir "Codex Installer\Codex.app\Contents\Resources\app.asar.unpacked"
@@ -255,7 +258,7 @@ if ($skipNative) {
 New-Item -ItemType Directory -Force -Path $nativeDir | Out-Null
 Push-Location $nativeDir
 if (-not (Test-Path (Join-Path $nativeDir "package.json"))) {
-  & $script:NpmCmd init -y | Out-Null
+  Set-Content -NoNewline -Path (Join-Path $nativeDir "package.json") -Value '{"name":"codex-native-builds","private":true}'
 }
 
 $bsSrcProbe = Join-Path $nativeDir "node_modules\better-sqlite3\build\Release\better_sqlite3.node"
@@ -271,8 +274,15 @@ if (-not $haveNative) {
     "prebuild-install",
     "electron@$electronVersion"
   )
-  & $script:NpmCmd install --no-save @deps
-  if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
+  $allowBuild = "electron,better-sqlite3"
+  $addArgs = @("add", "--allow-build=$allowBuild") + $deps
+  Invoke-Pnpm $addArgs
+  if ($LASTEXITCODE -ne 0) { throw "pnpm install failed." }
+  $electronInstallScript = Join-Path $nativeDir "node_modules\electron\install.js"
+  if (Test-Path $electronInstallScript) {
+    & node $electronInstallScript | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "electron binary install failed." }
+  }
   $electronExe = Join-Path $nativeDir "node_modules\electron\dist\electron.exe"
 } else {
   Write-Host "Native modules already present. Skipping rebuild." -ForegroundColor Cyan
@@ -284,7 +294,7 @@ if (-not $haveNative) {
   try {
     $rebuildCli = Join-Path $nativeDir "node_modules\@electron\rebuild\lib\cli.js"
     if (-not (Test-Path $rebuildCli)) { throw "electron-rebuild not found." }
-    & node $rebuildCli -v $electronVersion -w "better-sqlite3,node-pty" | Out-Null
+    & node $rebuildCli -v $electronVersion -o "better-sqlite3" | Out-Null
   } catch {
     $rebuildOk = $false
     Write-Host "electron-rebuild failed: $($_.Exception.Message)" -ForegroundColor Yellow
