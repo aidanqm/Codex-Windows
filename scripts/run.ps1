@@ -3,7 +3,8 @@ param(
   [string]$WorkDir = (Join-Path $PSScriptRoot "..\work"),
   [string]$CodexCliPath,
   [switch]$Reuse,
-  [switch]$NoLaunch
+  [switch]$NoLaunch,
+  [switch]$EnableLogging
 )
 
 Set-StrictMode -Version Latest
@@ -76,6 +77,9 @@ function Resolve-CodexCliPath([string]$Explicit) {
       $candidates += (Join-Path $npmRoot "@openai\codex\vendor\$arch\codex\codex.exe")
       $candidates += (Join-Path $npmRoot "@openai\codex\vendor\x86_64-pc-windows-msvc\codex\codex.exe")
       $candidates += (Join-Path $npmRoot "@openai\codex\vendor\aarch64-pc-windows-msvc\codex\codex.exe")
+      $candidates += (Join-Path $npmRoot "@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe")
+      $candidates += (Join-Path $npmRoot "@openai\codex\node_modules\@openai\codex-win32-arm64\vendor\aarch64-pc-windows-msvc\codex\codex.exe")
+      $candidates += (Join-Path $npmRoot "@openai\codex\node_modules\@openai\codex-win32-$($arch -replace 'aarch64','arm64' -replace 'x86_64','x64')\vendor\$arch\codex\codex.exe")
     }
   } catch {}
 
@@ -84,10 +88,18 @@ function Resolve-CodexCliPath([string]$Explicit) {
     if ($c -match '\.cmd$' -and (Test-Path $c)) {
       try {
         $cmdDir = Split-Path $c -Parent
+        $pkgRoot = Join-Path $cmdDir "node_modules\@openai\codex"
         $vendor = Join-Path $cmdDir "node_modules\@openai\codex\vendor"
-        if (Test-Path $vendor) {
-          $found = Get-ChildItem -Recurse -Filter "codex.exe" $vendor -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($found) { return (Resolve-Path $found.FullName).Path }
+        $searchRoots = @(
+          $vendor,
+          $pkgRoot,
+          (Join-Path $pkgRoot "node_modules")
+        )
+        foreach ($root in $searchRoots) {
+          if (Test-Path $root) {
+            $found = Get-ChildItem -Recurse -Filter "codex.exe" $root -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { return (Resolve-Path $found.FullName).Path }
+          }
         }
       } catch {}
     }
@@ -135,6 +147,13 @@ function Ensure-GitOnPath() {
 Ensure-Command node
 Ensure-Command npm
 Ensure-Command npx
+
+# PowerShell 5.1 + StrictMode can break npm.ps1/npx.ps1 wrappers.
+# Prefer cmd shims when present.
+$npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if ($npmCmd) { Set-Alias -Name npm -Value $npmCmd.Path -Scope Script }
+$npxCmd = Get-Command npx.cmd -ErrorAction SilentlyContinue
+if ($npxCmd) { Set-Alias -Name npx -Value $npxCmd.Path -Scope Script }
 
 foreach ($k in @("npm_config_runtime","npm_config_target","npm_config_disturl","npm_config_arch","npm_config_build_from_source")) {
   if (Test-Path "Env:$k") { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
@@ -258,7 +277,8 @@ if (-not $haveNative) {
   try {
     $rebuildCli = Join-Path $nativeDir "node_modules\@electron\rebuild\lib\cli.js"
     if (-not (Test-Path $rebuildCli)) { throw "electron-rebuild not found." }
-    & node $rebuildCli -v $electronVersion -w "better-sqlite3,node-pty" | Out-Null
+    # node-pty ships Windows prebuilds in this project; rebuild only better-sqlite3.
+    & node $rebuildCli -v $electronVersion -w "better-sqlite3" | Out-Null
   } catch {
     $rebuildOk = $false
     Write-Host "electron-rebuild failed: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -334,5 +354,11 @@ if (-not $NoLaunch) {
   New-Item -ItemType Directory -Force -Path $userDataDir | Out-Null
   New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
 
-  Start-Process -FilePath $electronExe -ArgumentList "$appDir","--enable-logging","--user-data-dir=`"$userDataDir`"","--disk-cache-dir=`"$cacheDir`"" -NoNewWindow -Wait
+  $launchArgs = @(
+    $appDir,
+    "--user-data-dir=`"$userDataDir`"",
+    "--disk-cache-dir=`"$cacheDir`""
+  )
+  if ($EnableLogging) { $launchArgs += "--enable-logging" }
+  Start-Process -FilePath $electronExe -ArgumentList $launchArgs -NoNewWindow -Wait
 }
