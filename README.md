@@ -102,6 +102,25 @@ CODEX_OZONE_PLATFORM=x11 XCURSOR_SIZE=16 CODEX_WINDOW_POSITION=80,80 CODEX_WINDO
 
 - `CODEX_DISABLE_GPU=1` is currently not recommended for this app build on WSL, because it can make the UI non-interactive/invisible.
 
+### WSLg refresh rate tuning (scroll performance)
+
+If scrolling feels like low FPS, set WSLg monitor refresh rate explicitly in Windows.
+
+In **PowerShell (Run as Administrator)**:
+
+```powershell
+$cfg = "C:\ProgramData\Microsoft\WSL\.wslgconfig"
+New-Item -ItemType Directory -Force -Path (Split-Path $cfg) | Out-Null
+Set-Content -Path $cfg -Encoding ascii -Value "[system-distro-env]`nWESTON_RDP_MONITOR_REFRESH_RATE=144"
+wsl --shutdown
+```
+
+Notes:
+- Use `144` for 144Hz displays.
+- Use `120` for 120Hz displays.
+- Use `60` for 60Hz displays.
+- After `wsl --shutdown`, reopen WSL and run Codex again.
+
 ## Notes
 - This is not an official OpenAI project.
 - Do not redistribute OpenAI app binaries or DMG files.
